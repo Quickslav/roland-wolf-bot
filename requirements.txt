@@ -1,2 +1,2 @@
 flask
-alpaca-trade-api
+alpaca-py
