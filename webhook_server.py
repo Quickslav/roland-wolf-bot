@@ -13,12 +13,31 @@ from alpaca.trading.enums import OrderSide, TimeInForce
 app = Flask(__name__)
 
 # ─────────────────────────────────────────
-# ALPACA CONFIGURATION
+# ALPACA ACCOUNTS
+# Account 1 — liquidates at 2:00 PM ET
+# Account 2 — liquidates at 11:30 AM ET
 # ─────────────────────────────────────────
-API_KEY    = "PKGABMMAXUYFY5NJCZIOT6XGLD"
-SECRET_KEY = "9K8RUh1QA5jQ64jCzf6TL1SPFofh5LQMF1TQubWdyBAs"
+ACCOUNT_1 = TradingClient(
+    "PKGABMMAXUYFY5NJCZIOT6XGLD",
+    "9K8RUh1QA5jQ64jCzf6TL1SPFofh5LQMF1TQubWdyBAs",
+    paper=True
+)
 
-trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
+ACCOUNT_2 = TradingClient(
+    "PK6Q5L6JMLIJYYQGPUBUNQLNU5",
+    "HdrTT2wNELMFKm6xZHymKCLbiaLCgC5dspUv6HDuGEWx",
+    paper=True
+)
+
+ACCOUNTS = {
+    "account1": {"client": ACCOUNT_1, "name": "Account 1 (2PM Exit)"},
+    "account2": {"client": ACCOUNT_2, "name": "Account 2 (11:30AM Exit)"},
+}
+
+# ─────────────────────────────────────────
+# SETTINGS
+# ─────────────────────────────────────────
+TRADE_AMOUNT = 10000  # $10,000 per ticker per account
 
 # ─────────────────────────────────────────
 # HELPER — safe int conversion
@@ -30,13 +49,39 @@ def safe_int(val):
         return None
 
 # ─────────────────────────────────────────
-# SAFETY NET — closes all positions at 2PM ET
-# Runs every 30 seconds, triggers between 1:58-2:02 PM ET
-# Catches any positions TradingView failed to close
+# HELPER — calculate shares from $10,000
+# ─────────────────────────────────────────
+def calculate_shares(client, symbol):
+    try:
+        # Get latest price from Alpaca
+        asset = client.get_latest_trade(symbol)
+        price = float(asset.price)
+        shares = int(TRADE_AMOUNT / price)
+        return shares, price
+    except Exception as e:
+        print(f"Error getting price for {symbol}: {e}")
+        return None, None
+
+# ─────────────────────────────────────────
+# PLACE ORDER HELPER
+# ─────────────────────────────────────────
+def place_order(client, symbol, qty, side):
+    order = MarketOrderRequest(
+        symbol        = symbol,
+        qty           = qty,
+        side          = side,
+        time_in_force = TimeInForce.DAY
+    )
+    return client.submit_order(order)
+
+# ─────────────────────────────────────────
+# SAFETY NET — Account 1 liquidates at 2:00 PM ET
+#              Account 2 liquidates at 11:30 AM ET
+# Checks every 30 seconds
 # ─────────────────────────────────────────
 def safety_liquidation():
     et_tz = pytz.timezone("America/New_York")
-    liquidated_today = False
+    liquidated_today = {"account1": False, "account2": False}
     last_date = None
 
     while True:
@@ -44,49 +89,51 @@ def safety_liquidation():
             now_et = datetime.now(et_tz)
             today  = now_et.date()
 
-            # Reset daily flag on new day
+            # Reset daily flags on new day
             if last_date != today:
-                liquidated_today = False
+                liquidated_today = {"account1": False, "account2": False}
                 last_date = today
 
-            # Trigger between 1:58 PM and 2:02 PM ET
-            is_liquidation_window = (
+            # Account 2 — 11:30 AM ET liquidation window
+            acc2_window = (now_et.hour == 11 and now_et.minute >= 28 and now_et.minute <= 32)
+
+            # Account 1 — 2:00 PM ET liquidation window
+            acc1_window = (
                 now_et.hour == 13 and now_et.minute >= 58
             ) or (
                 now_et.hour == 14 and now_et.minute <= 2
             )
 
-            if is_liquidation_window and not liquidated_today:
-                positions = trading_client.get_all_positions()
-                if positions:
-                    print(f"[SAFETY NET] {len(positions)} open position(s) found at 2PM — closing all")
-                    for position in positions:
-                        try:
-                            qty_held = abs(safe_int(position.qty))
-                            order = MarketOrderRequest(
-                                symbol        = position.symbol,
-                                qty           = qty_held,
-                                side          = OrderSide.SELL,
-                                time_in_force = TimeInForce.DAY
-                            )
-                            trading_client.submit_order(order)
-                            print(f"[SAFETY NET] Closed {qty_held} shares of {position.symbol}")
-                        except Exception as e:
-                            print(f"[SAFETY NET] Error closing {position.symbol}: {e}")
-                    liquidated_today = True
-                else:
-                    print("[SAFETY NET] 2PM check — no open positions found")
-                    liquidated_today = True
+            for acc_key, window in [("account2", acc2_window), ("account1", acc1_window)]:
+                if window and not liquidated_today[acc_key]:
+                    client = ACCOUNTS[acc_key]["client"]
+                    name   = ACCOUNTS[acc_key]["name"]
+                    try:
+                        positions = client.get_all_positions()
+                        if positions:
+                            print(f"[SAFETY NET] {name} — closing {len(positions)} position(s)")
+                            for position in positions:
+                                try:
+                                    qty_held = abs(safe_int(position.qty))
+                                    place_order(client, position.symbol, qty_held, OrderSide.SELL)
+                                    print(f"[SAFETY NET] {name} — closed {qty_held} shares of {position.symbol}")
+                                except Exception as e:
+                                    print(f"[SAFETY NET] {name} — error closing {position.symbol}: {e}")
+                        else:
+                            print(f"[SAFETY NET] {name} — no open positions found")
+                    except Exception as e:
+                        print(f"[SAFETY NET] {name} — error: {e}")
+                    liquidated_today[acc_key] = True
 
         except Exception as e:
             print(f"[SAFETY NET] Error: {e}")
 
-        time.sleep(30)  # check every 30 seconds
+        time.sleep(30)
 
 threading.Thread(target=safety_liquidation, daemon=True).start()
 
 # ─────────────────────────────────────────
-# KEEP ALIVE — pings server every 10 mins
+# KEEP ALIVE
 # ─────────────────────────────────────────
 RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:5000")
 
@@ -104,11 +151,13 @@ threading.Thread(target=keep_alive, daemon=True).start()
 
 # ─────────────────────────────────────────
 # WEBHOOK ENDPOINT
+# Receives signal from TradingView
+# Sends to BOTH accounts simultaneously
 # ─────────────────────────────────────────
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
-        raw = request.get_data(as_text=True)
+        raw  = request.get_data(as_text=True)
         data = json.loads(raw)
     except Exception:
         return jsonify({"error": "Could not parse JSON body"}), 400
@@ -118,63 +167,66 @@ def webhook():
 
     action = data.get('action', '').upper()
     symbol = data.get('ticker') or data.get('symbol')
-    qty    = safe_int(data.get('qty', 100))
-    stop   = data.get('stop')
-    tp     = data.get('tp')
 
     if not symbol or not action:
         return jsonify({"error": "Missing ticker or action"}), 400
 
-    if qty is None or qty <= 0:
-        return jsonify({"error": f"Invalid qty value: {data.get('qty')}"}), 400
+    print(f"Received: action={action}, symbol={symbol}")
 
-    print(f"Received: action={action}, symbol={symbol}, qty={qty}")
+    results = {}
 
-    try:
-        # ── ENTRY ──
-        if action in ("ENTRY", "BUY"):
-            order = MarketOrderRequest(
-                symbol        = symbol,
-                qty           = qty,
-                side          = OrderSide.BUY,
-                time_in_force = TimeInForce.DAY
-            )
-            trading_client.submit_order(order)
-            print(f"BUY order placed: {qty} shares of {symbol}")
-            return jsonify({"message": f"BUY {qty} shares of {symbol}", "stop": stop, "tp": tp}), 200
-
-        # ── EXIT ──
-        elif action in ("EXIT", "SELL"):
-            reason = data.get('reason', 'UNKNOWN')
+    # ── ENTRY — buy $10,000 worth on both accounts ──
+    if action in ("ENTRY", "BUY"):
+        for acc_key, acc in ACCOUNTS.items():
+            client = acc["client"]
+            name   = acc["name"]
             try:
-                position = trading_client.get_open_position(symbol)
-                qty_held = abs(safe_int(position.qty))
-                order = MarketOrderRequest(
-                    symbol        = symbol,
-                    qty           = qty_held,
-                    side          = OrderSide.SELL,
-                    time_in_force = TimeInForce.DAY
-                )
-                trading_client.submit_order(order)
-                print(f"SELL order placed: {qty_held} shares of {symbol} — reason: {reason}")
-                return jsonify({"message": f"SELL {qty_held} shares of {symbol}", "reason": reason}), 200
+                # Get current price and calculate shares
+                latest  = client.get_latest_trade(symbol)
+                price   = float(latest.price)
+                shares  = int(TRADE_AMOUNT / price)
+
+                if shares <= 0:
+                    results[acc_key] = f"Price too high to buy with ${TRADE_AMOUNT}"
+                    continue
+
+                place_order(client, symbol, shares, OrderSide.BUY)
+                print(f"[{name}] BUY {shares} shares of {symbol} @ ~${price:.2f}")
+                results[acc_key] = f"BUY {shares} shares of {symbol} @ ~${price:.2f}"
+
             except Exception as e:
-                print(f"No position found for {symbol}: {e}")
-                return jsonify({"message": f"No open position for {symbol}"}), 200
+                print(f"[{name}] Error on BUY: {e}")
+                results[acc_key] = f"Error: {str(e)}"
 
-        else:
-            return jsonify({"error": f"Unknown action: {action}"}), 400
+        return jsonify({"message": "Entry processed", "results": results}), 200
 
-    except Exception as e:
-        print(f"Error placing order: {e}")
-        return jsonify({"error": str(e)}), 500
+    # ── EXIT — sell full position on both accounts ──
+    elif action in ("EXIT", "SELL"):
+        reason = data.get('reason', 'UNKNOWN')
+        for acc_key, acc in ACCOUNTS.items():
+            client = acc["client"]
+            name   = acc["name"]
+            try:
+                position = client.get_open_position(symbol)
+                qty_held = abs(safe_int(position.qty))
+                place_order(client, symbol, qty_held, OrderSide.SELL)
+                print(f"[{name}] SELL {qty_held} shares of {symbol} — reason: {reason}")
+                results[acc_key] = f"SELL {qty_held} shares of {symbol}"
+            except Exception as e:
+                print(f"[{name}] No position or error for {symbol}: {e}")
+                results[acc_key] = f"No open position for {symbol}"
+
+        return jsonify({"message": "Exit processed", "results": results}), 200
+
+    else:
+        return jsonify({"error": f"Unknown action: {action}"}), 400
 
 # ─────────────────────────────────────────
 # HEALTH CHECK
 # ─────────────────────────────────────────
 @app.route('/', methods=['GET'])
 def health():
-    return jsonify({"status": "Webhook server is running!"}), 200
+    return jsonify({"status": "Dual account webhook server running!"}), 200
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
