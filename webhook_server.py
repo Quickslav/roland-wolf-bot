@@ -7,8 +7,10 @@ import urllib.request
 from datetime import datetime
 import pytz
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.requests import MarketOrderRequest, GetLatestTradeRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockLatestTradeRequest
 
 app = Flask(__name__)
 
@@ -17,26 +19,23 @@ app = Flask(__name__)
 # Account 1 — liquidates at 2:00 PM ET
 # Account 2 — liquidates at 11:30 AM ET
 # ─────────────────────────────────────────
-ACCOUNT_1 = TradingClient(
-    "PKGABMMAXUYFY5NJCZIOT6XGLD",
-    "9K8RUh1QA5jQ64jCzf6TL1SPFofh5LQMF1TQubWdyBAs",
-    paper=True
-)
+API_KEY_1    = "PKGABMMAXUYFY5NJCZIOT6XGLD"
+SECRET_KEY_1 = "9K8RUh1QA5jQ64jCzf6TL1SPFofh5LQMF1TQubWdyBAs"
 
-ACCOUNT_2 = TradingClient(
-    "PK6Q5L6JMLIJYYQGPUBUNQLNU5",
-    "HdrTT2wNELMFKm6xZHymKCLbiaLCgC5dspUv6HDuGEWx",
-    paper=True
-)
+API_KEY_2    = "PK6Q5L6JMLIJYYQGPUBUNQLNU5"
+SECRET_KEY_2 = "HdrTT2wNELMFKm6xZHymKCLbiaLCgC5dspUv6HDuGEWx"
+
+ACCOUNT_1 = TradingClient(API_KEY_1, SECRET_KEY_1, paper=True)
+ACCOUNT_2 = TradingClient(API_KEY_2, SECRET_KEY_2, paper=True)
+
+# Data client for fetching live prices (uses account 1 keys)
+DATA_CLIENT = StockHistoricalDataClient(API_KEY_1, SECRET_KEY_1)
 
 ACCOUNTS = {
     "account1": {"client": ACCOUNT_1, "name": "Account 1 (2PM Exit)"},
     "account2": {"client": ACCOUNT_2, "name": "Account 2 (11:30AM Exit)"},
 }
 
-# ─────────────────────────────────────────
-# SETTINGS
-# ─────────────────────────────────────────
 TRADE_AMOUNT = 10000  # $10,000 per ticker per account
 
 # ─────────────────────────────────────────
@@ -49,21 +48,20 @@ def safe_int(val):
         return None
 
 # ─────────────────────────────────────────
-# HELPER — calculate shares from $10,000
+# HELPER — get live price using correct alpaca-py method
 # ─────────────────────────────────────────
-def calculate_shares(client, symbol):
+def get_live_price(symbol):
     try:
-        # Get latest price from Alpaca
-        asset = client.get_latest_trade(symbol)
-        price = float(asset.price)
-        shares = int(TRADE_AMOUNT / price)
-        return shares, price
+        request_params = StockLatestTradeRequest(symbol_or_symbols=symbol)
+        response       = DATA_CLIENT.get_stock_latest_trade(request_params)
+        price          = float(response[symbol].price)
+        return price
     except Exception as e:
-        print(f"Error getting price for {symbol}: {e}")
-        return None, None
+        print(f"Error fetching price for {symbol}: {e}")
+        return None
 
 # ─────────────────────────────────────────
-# PLACE ORDER HELPER
+# HELPER — place order
 # ─────────────────────────────────────────
 def place_order(client, symbol, qty, side):
     order = MarketOrderRequest(
@@ -75,9 +73,9 @@ def place_order(client, symbol, qty, side):
     return client.submit_order(order)
 
 # ─────────────────────────────────────────
-# SAFETY NET — Account 1 liquidates at 2:00 PM ET
-#              Account 2 liquidates at 11:30 AM ET
-# Checks every 30 seconds
+# SAFETY NET LIQUIDATION
+# Account 1 — 2:00 PM ET
+# Account 2 — 11:30 AM ET
 # ─────────────────────────────────────────
 def safety_liquidation():
     et_tz = pytz.timezone("America/New_York")
@@ -89,20 +87,12 @@ def safety_liquidation():
             now_et = datetime.now(et_tz)
             today  = now_et.date()
 
-            # Reset daily flags on new day
             if last_date != today:
                 liquidated_today = {"account1": False, "account2": False}
                 last_date = today
 
-            # Account 2 — 11:30 AM ET liquidation window
             acc2_window = (now_et.hour == 11 and now_et.minute >= 28 and now_et.minute <= 32)
-
-            # Account 1 — 2:00 PM ET liquidation window
-            acc1_window = (
-                now_et.hour == 13 and now_et.minute >= 58
-            ) or (
-                now_et.hour == 14 and now_et.minute <= 2
-            )
+            acc1_window = (now_et.hour == 13 and now_et.minute >= 58) or (now_et.hour == 14 and now_et.minute <= 2)
 
             for acc_key, window in [("account2", acc2_window), ("account1", acc1_window)]:
                 if window and not liquidated_today[acc_key]:
@@ -120,7 +110,7 @@ def safety_liquidation():
                                 except Exception as e:
                                     print(f"[SAFETY NET] {name} — error closing {position.symbol}: {e}")
                         else:
-                            print(f"[SAFETY NET] {name} — no open positions found")
+                            print(f"[SAFETY NET] {name} — no open positions")
                     except Exception as e:
                         print(f"[SAFETY NET] {name} — error: {e}")
                     liquidated_today[acc_key] = True
@@ -151,8 +141,6 @@ threading.Thread(target=keep_alive, daemon=True).start()
 
 # ─────────────────────────────────────────
 # WEBHOOK ENDPOINT
-# Receives signal from TradingView
-# Sends to BOTH accounts simultaneously
 # ─────────────────────────────────────────
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -175,32 +163,33 @@ def webhook():
 
     results = {}
 
-    # ── ENTRY — buy $10,000 worth on both accounts ──
+    # ── ENTRY ──
     if action in ("ENTRY", "BUY"):
+        # Fetch live price once — use for both accounts
+        price = get_live_price(symbol)
+        if not price:
+            return jsonify({"error": f"Could not fetch price for {symbol}"}), 500
+
+        shares = int(TRADE_AMOUNT / price)
+        if shares <= 0:
+            return jsonify({"error": f"Price too high to buy ${TRADE_AMOUNT} worth"}), 400
+
+        print(f"Live price for {symbol}: ${price:.4f} — buying {shares} shares")
+
         for acc_key, acc in ACCOUNTS.items():
             client = acc["client"]
             name   = acc["name"]
             try:
-                # Get current price and calculate shares
-                latest  = client.get_latest_trade(symbol)
-                price   = float(latest.price)
-                shares  = int(TRADE_AMOUNT / price)
-
-                if shares <= 0:
-                    results[acc_key] = f"Price too high to buy with ${TRADE_AMOUNT}"
-                    continue
-
                 place_order(client, symbol, shares, OrderSide.BUY)
-                print(f"[{name}] BUY {shares} shares of {symbol} @ ~${price:.2f}")
-                results[acc_key] = f"BUY {shares} shares of {symbol} @ ~${price:.2f}"
-
+                print(f"[{name}] BUY {shares} shares of {symbol} @ ~${price:.4f}")
+                results[acc_key] = f"BUY {shares} shares of {symbol} @ ~${price:.4f}"
             except Exception as e:
                 print(f"[{name}] Error on BUY: {e}")
                 results[acc_key] = f"Error: {str(e)}"
 
         return jsonify({"message": "Entry processed", "results": results}), 200
 
-    # ── EXIT — sell full position on both accounts ──
+    # ── EXIT ──
     elif action in ("EXIT", "SELL"):
         reason = data.get('reason', 'UNKNOWN')
         for acc_key, acc in ACCOUNTS.items():
@@ -230,4 +219,4 @@ def health():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host="0.0.0.0", port=port, threaded=True)
