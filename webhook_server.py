@@ -7,7 +7,7 @@ import urllib.request
 from datetime import datetime
 import pytz
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, GetLatestTradeRequest
+from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestTradeRequest
