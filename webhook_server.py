@@ -16,8 +16,9 @@ app = Flask(__name__)
 
 # ─────────────────────────────────────────
 # ALPACA ACCOUNTS
-# Account 1 — liquidates at 2:00 PM ET
-# Account 2 — liquidates at 11:30 AM ET
+# Account 1 — 2:00 PM ET exit (strategy v9)
+# Account 2 — 11:30 AM ET exit (strategy v9)
+# Account 3 — VWAP exit test (strategy v10)
 # ─────────────────────────────────────────
 API_KEY_1    = "PKGABMMAXUYFY5NJCZIOT6XGLD"
 SECRET_KEY_1 = "9K8RUh1QA5jQ64jCzf6TL1SPFofh5LQMF1TQubWdyBAs"
@@ -25,16 +26,23 @@ SECRET_KEY_1 = "9K8RUh1QA5jQ64jCzf6TL1SPFofh5LQMF1TQubWdyBAs"
 API_KEY_2    = "PK6Q5L6JMLIJYYQGPUBUNQLNU5"
 SECRET_KEY_2 = "HdrTT2wNELMFKm6xZHymKCLbiaLCgC5dspUv6HDuGEWx"
 
+API_KEY_3    = "PKIYGXQT3DGX7B6BDIZFZ6VQWU"
+SECRET_KEY_3 = "Ekaz5bQHUbbFUQvmidbBSU89wHMtgigik3TsyFD15NA3"
+
 ACCOUNT_1 = TradingClient(API_KEY_1, SECRET_KEY_1, paper=True)
 ACCOUNT_2 = TradingClient(API_KEY_2, SECRET_KEY_2, paper=True)
+ACCOUNT_3 = TradingClient(API_KEY_3, SECRET_KEY_3, paper=True)
 
-# Data client for fetching live prices (uses account 1 keys)
 DATA_CLIENT = StockHistoricalDataClient(API_KEY_1, SECRET_KEY_1)
 
+# Main accounts — v9 strategy
 ACCOUNTS = {
     "account1": {"client": ACCOUNT_1, "name": "Account 1 (2PM Exit)"},
     "account2": {"client": ACCOUNT_2, "name": "Account 2 (11:30AM Exit)"},
 }
+
+# Test account — v10 VWAP strategy
+ACCOUNT_TEST = {"client": ACCOUNT_3, "name": "Account 3 (VWAP Test)"}
 
 TRADE_AMOUNT = 10000  # $10,000 per ticker per account
 
@@ -48,7 +56,7 @@ def safe_int(val):
         return None
 
 # ─────────────────────────────────────────
-# HELPER — get live price using correct alpaca-py method
+# HELPER — get live price
 # ─────────────────────────────────────────
 def get_live_price(symbol):
     try:
@@ -76,10 +84,11 @@ def place_order(client, symbol, qty, side):
 # SAFETY NET LIQUIDATION
 # Account 1 — 2:00 PM ET
 # Account 2 — 11:30 AM ET
+# Account 3 — 2:00 PM ET (same as Account 1 — VWAP should exit before this)
 # ─────────────────────────────────────────
 def safety_liquidation():
     et_tz = pytz.timezone("America/New_York")
-    liquidated_today = {"account1": False, "account2": False}
+    liquidated_today = {"account1": False, "account2": False, "account3": False}
     last_date = None
 
     while True:
@@ -88,16 +97,18 @@ def safety_liquidation():
             today  = now_et.date()
 
             if last_date != today:
-                liquidated_today = {"account1": False, "account2": False}
+                liquidated_today = {"account1": False, "account2": False, "account3": False}
                 last_date = today
 
             acc2_window = (now_et.hour == 11 and now_et.minute >= 28 and now_et.minute <= 32)
             acc1_window = (now_et.hour == 13 and now_et.minute >= 58) or (now_et.hour == 14 and now_et.minute <= 2)
 
-            for acc_key, window in [("account2", acc2_window), ("account1", acc1_window)]:
+            # Account 2 — 11:30 AM
+            for acc_key, window in [("account2", acc2_window), ("account1", acc1_window), ("account3", acc1_window)]:
                 if window and not liquidated_today[acc_key]:
-                    client = ACCOUNTS[acc_key]["client"]
-                    name   = ACCOUNTS[acc_key]["name"]
+                    client = ACCOUNT_2["client"] if acc_key == "account2" else \
+                             ACCOUNT_1 if acc_key == "account1" else ACCOUNT_3
+                    name   = ACCOUNTS.get(acc_key, {}).get("name", "Account 3 (VWAP Test)")
                     try:
                         positions = client.get_all_positions()
                         if positions:
@@ -140,7 +151,7 @@ def keep_alive():
 threading.Thread(target=keep_alive, daemon=True).start()
 
 # ─────────────────────────────────────────
-# WEBHOOK ENDPOINT
+# MAIN WEBHOOK — Accounts 1 and 2 (v9 strategy)
 # ─────────────────────────────────────────
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -159,63 +170,107 @@ def webhook():
     if not symbol or not action:
         return jsonify({"error": "Missing ticker or action"}), 400
 
-    print(f"Received: action={action}, symbol={symbol}")
-
+    print(f"[MAIN] action={action}, symbol={symbol}")
     results = {}
 
-    # ── ENTRY ──
     if action in ("ENTRY", "BUY"):
-        # Fetch live price once — use for both accounts
         price = get_live_price(symbol)
         if not price:
             return jsonify({"error": f"Could not fetch price for {symbol}"}), 500
 
         shares = int(TRADE_AMOUNT / price)
         if shares <= 0:
-            return jsonify({"error": f"Price too high to buy ${TRADE_AMOUNT} worth"}), 400
-
-        print(f"Live price for {symbol}: ${price:.4f} — buying {shares} shares")
+            return jsonify({"error": f"Price too high"}), 400
 
         for acc_key, acc in ACCOUNTS.items():
-            client = acc["client"]
-            name   = acc["name"]
             try:
-                place_order(client, symbol, shares, OrderSide.BUY)
-                print(f"[{name}] BUY {shares} shares of {symbol} @ ~${price:.4f}")
-                results[acc_key] = f"BUY {shares} shares of {symbol} @ ~${price:.4f}"
+                place_order(acc["client"], symbol, shares, OrderSide.BUY)
+                print(f"[{acc['name']}] BUY {shares} shares of {symbol} @ ~${price:.4f}")
+                results[acc_key] = f"BUY {shares} shares @ ~${price:.4f}"
             except Exception as e:
-                print(f"[{name}] Error on BUY: {e}")
+                print(f"[{acc['name']}] Error: {e}")
                 results[acc_key] = f"Error: {str(e)}"
 
         return jsonify({"message": "Entry processed", "results": results}), 200
 
-    # ── EXIT ──
     elif action in ("EXIT", "SELL"):
         reason = data.get('reason', 'UNKNOWN')
         for acc_key, acc in ACCOUNTS.items():
-            client = acc["client"]
-            name   = acc["name"]
             try:
-                position = client.get_open_position(symbol)
+                position = acc["client"].get_open_position(symbol)
                 qty_held = abs(safe_int(position.qty))
-                place_order(client, symbol, qty_held, OrderSide.SELL)
-                print(f"[{name}] SELL {qty_held} shares of {symbol} — reason: {reason}")
-                results[acc_key] = f"SELL {qty_held} shares of {symbol}"
+                place_order(acc["client"], symbol, qty_held, OrderSide.SELL)
+                print(f"[{acc['name']}] SELL {qty_held} shares of {symbol} — {reason}")
+                results[acc_key] = f"SELL {qty_held} shares"
             except Exception as e:
-                print(f"[{name}] No position or error for {symbol}: {e}")
-                results[acc_key] = f"No open position for {symbol}"
+                print(f"[{acc['name']}] No position: {e}")
+                results[acc_key] = f"No open position"
 
         return jsonify({"message": "Exit processed", "results": results}), 200
 
-    else:
-        return jsonify({"error": f"Unknown action: {action}"}), 400
+    return jsonify({"error": f"Unknown action: {action}"}), 400
+
+# ─────────────────────────────────────────
+# TEST WEBHOOK — Account 3 only (v10 VWAP strategy)
+# ─────────────────────────────────────────
+@app.route('/webhook-test', methods=['POST'])
+def webhook_test():
+    try:
+        raw  = request.get_data(as_text=True)
+        data = json.loads(raw)
+    except Exception:
+        return jsonify({"error": "Could not parse JSON body"}), 400
+
+    if not data:
+        return jsonify({"error": "No data received"}), 400
+
+    action = data.get('action', '').upper()
+    symbol = data.get('ticker') or data.get('symbol')
+
+    if not symbol or not action:
+        return jsonify({"error": "Missing ticker or action"}), 400
+
+    print(f"[TEST] action={action}, symbol={symbol}")
+    client = ACCOUNT_TEST["client"]
+    name   = ACCOUNT_TEST["name"]
+
+    if action in ("ENTRY", "BUY"):
+        price = get_live_price(symbol)
+        if not price:
+            return jsonify({"error": f"Could not fetch price for {symbol}"}), 500
+
+        shares = int(TRADE_AMOUNT / price)
+        if shares <= 0:
+            return jsonify({"error": f"Price too high"}), 400
+
+        try:
+            place_order(client, symbol, shares, OrderSide.BUY)
+            print(f"[{name}] BUY {shares} shares of {symbol} @ ~${price:.4f}")
+            return jsonify({"message": f"TEST BUY {shares} shares of {symbol}"}), 200
+        except Exception as e:
+            print(f"[{name}] Error: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    elif action in ("EXIT", "SELL"):
+        reason = data.get('reason', 'UNKNOWN')
+        try:
+            position = client.get_open_position(symbol)
+            qty_held = abs(safe_int(position.qty))
+            place_order(client, symbol, qty_held, OrderSide.SELL)
+            print(f"[{name}] SELL {qty_held} shares of {symbol} — {reason}")
+            return jsonify({"message": f"TEST SELL {qty_held} shares of {symbol}", "reason": reason}), 200
+        except Exception as e:
+            print(f"[{name}] No position: {e}")
+            return jsonify({"message": f"No open position for {symbol}"}), 200
+
+    return jsonify({"error": f"Unknown action: {action}"}), 400
 
 # ─────────────────────────────────────────
 # HEALTH CHECK
 # ─────────────────────────────────────────
 @app.route('/', methods=['GET'])
 def health():
-    return jsonify({"status": "Dual account webhook server running!"}), 200
+    return jsonify({"status": "Triple account webhook server running! v9=/webhook v10=/webhook-test"}), 200
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
