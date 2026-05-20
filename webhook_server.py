@@ -35,14 +35,13 @@ ACCOUNT_3 = TradingClient(API_KEY_3, SECRET_KEY_3, paper=True)
 
 DATA_CLIENT = StockHistoricalDataClient(API_KEY_1, SECRET_KEY_1)
 
-# All three accounts — all receive every trade
+# Main accounts — v9 strategy
 ACCOUNTS = {
     "account1": {"client": ACCOUNT_1, "name": "Account 1 (2PM Exit)"},
     "account2": {"client": ACCOUNT_2, "name": "Account 2 (11:30AM Exit)"},
-    "account3": {"client": ACCOUNT_3, "name": "Account 3 (VWAP Test)"},
 }
 
-# Test account — kept for backward compatibility
+# Test account — v10 VWAP strategy only
 ACCOUNT_TEST = {"client": ACCOUNT_3, "name": "Account 3 (VWAP Test)"}
 
 TRADE_AMOUNT = 10000  # $10,000 per ticker per account
