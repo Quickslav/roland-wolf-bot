@@ -101,10 +101,6 @@ def check_entry_filter(symbol, entry_price):
     now_et   = datetime.now(et_tz)
     today    = now_et.date()
 
-    # Date strings for Alpaca API
-    today_str    = today.isoformat()
-    tomorrow_str = today.replace(day=today.day + 1).isoformat() if today.month == today.replace(day=28).month else today_str
-
     try:
         from alpaca.data.requests import StockBarsRequest
         from alpaca.data.timeframe import TimeFrame
@@ -204,9 +200,19 @@ def safety_liquidation():
 
             for acc_key, window in [("account2", acc2_window), ("account1", acc1_window), ("account3", acc1_window)]:
                 if window and not liquidated_today[acc_key]:
-                    client = ACCOUNT_2["client"] if acc_key == "account2" else \
-                             ACCOUNT_1 if acc_key == "account1" else ACCOUNT_3
-                    name   = ACCOUNTS.get(acc_key, {}).get("name", "Account 3 (VWAP Test)")
+
+                    # ── FIXED: use correct client references ──────────────────
+                    if acc_key == "account2":
+                        client = ACCOUNTS["account2"]["client"]
+                        name   = ACCOUNTS["account2"]["name"]
+                    elif acc_key == "account1":
+                        client = ACCOUNTS["account1"]["client"]
+                        name   = ACCOUNTS["account1"]["name"]
+                    else:
+                        client = ACCOUNT_TEST["client"]
+                        name   = ACCOUNT_TEST["name"]
+                    # ─────────────────────────────────────────────────────────
+
                     try:
                         positions = client.get_all_positions()
                         if positions:
