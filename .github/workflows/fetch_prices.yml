@@ -1,0 +1,22 @@
+name: Fetch Close Prices
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pip install requests openpyxl
+
+      - name: Run script
+        run: python add_close_prices.py
+
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: updated-spreadsheet
+          path: merged_trading_tracker__1_.xlsx
