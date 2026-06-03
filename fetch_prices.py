@@ -79,12 +79,17 @@ resp = requests.get(
 )
 
 bars = resp.json().get("bars", {})
-closes = {}
+data = {}
 for ticker, bar_list in bars.items():
     for bar in bar_list:
-        closes[ticker + "|" + bar["t"][:10]] = bar["c"]
+        key = ticker + "|" + bar["t"][:10]
+        data[key] = {"h": bar["h"], "l": bar["l"], "c": bar["c"]}
 
-print("date,ticker,close")
+print("date,ticker,high,low,close")
 for date, ticker in ROWS:
-    price = closes.get(ticker + "|" + date, "N/A")
-    print(f"{date},{ticker},{price}")
+    key = ticker + "|" + date
+    if key in data:
+        d = data[key]
+        print(f"{date},{ticker},{d['h']},{d['l']},{d['c']}")
+    else:
+        print(f"{date},{ticker},N/A,N/A,N/A")
