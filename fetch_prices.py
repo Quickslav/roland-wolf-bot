@@ -1,68 +1,42 @@
 import requests
+import openpyxl
+from openpyxl.styles import Font, Border, Side
+from datetime import datetime, date
 
 KEY    = "PKIYGXQT3DGX7B6BDIZFZ6VQWU"
 SECRET = "Ekaz5bQHUbbFUQvmidbBSU89wHMtgigik3TsyFD15NA3"
+
+SPREADSHEET_PATH = "merged_trading_tracker__3_.xlsx"  # adjust path if needed
 
 HEADERS = {
     "APCA-API-KEY-ID":     KEY,
     "APCA-API-SECRET-KEY": SECRET,
 }
 
+# ── All rows needing H/L/C — original list + new June 3/4/5 rows ─────
 ROWS = [
-    ["2026-05-08","DXYZ"],
-    ["2026-05-11","WYFI"],["2026-05-11","TNET"],["2026-05-11","PRSO"],["2026-05-11","MRAM"],
-    ["2026-05-11","GSIT"],["2026-05-11","DXYZ"],["2026-05-11","CEVA"],["2026-05-11","BNAI"],
-    ["2026-05-12","PACS"],["2026-05-12","SIBN"],["2026-05-12","ZBRA"],
-    ["2026-05-13","WOLF"],["2026-05-13","VELO"],["2026-05-13","PENG"],["2026-05-13","DXYZ"],
-    ["2026-05-13","SNAL"],["2026-05-13","MRAM"],["2026-05-13","MNTS"],
-    ["2026-05-14","STAA"],["2026-05-14","SNAL"],["2026-05-14","PLAG"],["2026-05-14","MOBX"],
-    ["2026-05-14","LESL"],["2026-05-14","IPST"],["2026-05-14","GTBP"],["2026-05-14","EDBL"],
-    ["2026-05-14","BNKK"],["2026-05-14","AIIO"],["2026-05-14","ALP"],
-    ["2026-05-15","TDIC"],["2026-05-15","SNAL"],["2026-05-15","MRNO"],["2026-05-15","HUBC"],
-    ["2026-05-15","HCWB"],["2026-05-15","GEMI"],["2026-05-15","BRUN"],["2026-05-15","BIYA"],
-    ["2026-05-18","QUCY"],["2026-05-18","QNCX"],["2026-05-18","PMI"],["2026-05-18","MNTS"],
-    ["2026-05-18","MEHA"],["2026-05-18","LABT"],["2026-05-18","DXYZ"],["2026-05-18","CREG"],
-    ["2026-05-18","AIIO"],
-    ["2026-05-19","VRAX"],["2026-05-19","PSQH"],["2026-05-19","MGN"],["2026-05-19","HUBC"],
-    ["2026-05-19","GIPR"],["2026-05-19","CODX"],["2026-05-19","BKKT"],["2026-05-19","AMST"],
-    ["2026-05-19","PIII"],
-    ["2026-05-20","RVI"],["2026-05-20","LGVN"],["2026-05-20","GCL"],["2026-05-20","EDSA"],
-    ["2026-05-20","TLN"],["2026-05-20","BLNE"],["2026-05-20","WNW"],["2026-05-20","TDIC"],
-    ["2026-05-20","AMPG"],["2026-05-20","SLXN"],["2026-05-20","WOK"],
-    ["2026-05-21","LIMN"],["2026-05-21","SBFM"],["2026-05-21","QUCY"],["2026-05-21","CODX"],
-    ["2026-05-21","RL"],["2026-05-21","JUNS"],["2026-05-21","WNW"],["2026-05-21","PHGE"],
-    ["2026-05-21","MRAM"],["2026-05-21","XNDU"],["2026-05-21","UCAR"],["2026-05-21","AVEX"],
-    ["2026-05-21","VIDA"],
-    ["2026-05-22","SQNS"],["2026-05-22","RYOJ"],["2026-05-22","NXL"],["2026-05-22","MTVA"],
-    ["2026-05-22","EZRA"],["2026-05-22","DYAI"],["2026-05-22","MEHA"],["2026-05-22","GOVX"],
-    ["2026-05-22","HCWB"],["2026-05-22","MTVA"],["2026-05-22","KIDZ"],["2026-05-22","NXL"],
-    ["2026-05-26","ARTL"],["2026-05-26","CPSH"],["2026-05-26","IPWR"],["2026-05-26","CCOI"],
-    ["2026-05-26","NNE"],["2026-05-26","QUIK"],["2026-05-26","TRT"],["2026-05-26","SPIR"],
-    ["2026-05-26","MRLN"],["2026-05-26","KVHI"],["2026-05-26","AMRC"],["2026-05-26","PHGE"],
-    ["2026-05-26","CODX"],["2026-05-26","WOLF"],["2026-05-26","NCPL"],["2026-05-26","SWMR"],
-    ["2026-05-26","QUCY"],
-    ["2026-05-27","ASTC"],["2026-05-27","SNGX"],["2026-05-27","NCPL"],["2026-05-27","MNTS"],
-    ["2026-05-27","SEGG"],["2026-05-27","CPSH"],["2026-05-27","ASTI"],["2026-05-27","AIM"],
-    ["2026-05-27","CRSR"],["2026-05-27","PCLA"],
-    ["2026-05-28","ASTC"],["2026-05-28","RKTO"],["2026-05-28","UMAC"],["2026-05-28","LTRX"],
-    ["2026-05-28","PUSA"],["2026-05-28","FATN"],["2026-05-28","SWMR"],["2026-05-28","TPET"],
-    ["2026-05-28","QUCY"],["2026-05-28","PHR"],["2026-05-28","OCC"],["2026-05-28","DFNS"],
-    ["2026-05-28","CRSR"],["2026-05-28","BATL"],["2026-05-28","AVAV"],["2026-05-28","AIRO"],
-    ["2026-05-29","XTIA"],["2026-05-29","TSSI"],["2026-05-29","PLCE"],["2026-05-29","PENG"],
-    ["2026-05-29","OLOX"],["2026-05-29","HCWB"],["2026-05-29","ELMT"],["2026-05-29","CODX"],
-    ["2026-05-29","BRUN"],["2026-05-29","BNKK"],["2026-05-29","ASBP"],["2026-05-29","ASTC"],
-    ["2026-05-29","QTTB"],["2026-05-29","BRTX"],
-    ["2026-06-01","PLCE"],["2026-06-01","LENZ"],["2026-06-01","KITT"],["2026-06-01","GDC"],
-    ["2026-06-01","ELMT"],["2026-06-01","CPSH"],["2026-06-01","BIRD"],["2026-06-01","AIRJ"],
-    ["2026-06-01","ACTU"],["2026-06-01","SOAR"],["2026-06-01","ANY"],["2026-06-01","AIM"],
-    ["2026-06-01","WALD"],["2026-06-01","SAIC"],["2026-06-01","SEGG"],
-    ["2026-06-02","SOAR"],["2026-06-02","SBFM"],["2026-06-02","QTTB"],["2026-06-02","LFVN"],
-    ["2026-06-02","ELMT"],["2026-06-02","DBGI"],["2026-06-02","CING"],["2026-06-02","AIRJ"],
-    ["2026-06-02","PMI"],["2026-06-02","GXAI"],["2026-06-02","LASE"],["2026-06-02","CTNT"],
-    ["2026-06-02","QUCY"],["2026-06-02","RKTO"],
+   
+    # ── New: June 3 ───────────────────────────────────────────────────
+    ["2026-06-03","XOS"],["2026-06-03","LASE"],["2026-06-03","PMI"],["2026-06-03","SVCO"],
+    ["2026-06-03","SINT"],["2026-06-03","NEOV"],["2026-06-03","LFVN"],["2026-06-03","CNTB"],
+    ["2026-06-03","BRUN"],["2026-06-03","BNKK"],["2026-06-03","APVO"],["2026-06-03","AIRJ"],
+    ["2026-06-03","SOAR"],["2026-06-03","SDOT"],
+    # ── New: June 4 ───────────────────────────────────────────────────
+    ["2026-06-04","BNKK"],["2026-06-04","GENK"],["2026-06-04","TWAV"],["2026-06-04","SBEV"],
+    ["2026-06-04","ONFO"],["2026-06-04","TLYS"],["2026-06-04","MOBX"],["2026-06-04","ROLR"],
+    ["2026-06-04","LGIH"],["2026-06-04","CAL"],
+    # ── New: June 5 ───────────────────────────────────────────────────
+    ["2026-06-05","MRLN"],["2026-06-05","RMSG"],["2026-06-05","BKSY"],["2026-06-05","MCRB"],
+    ["2026-06-05","MNTS"],["2026-06-05","STI"],["2026-06-05","DEVS"],
 ]
 
+# ── Fetch all bars in one request ────────────────────────────────────
 tickers = list(set(r[1] for r in ROWS))
+dates   = [r[0] for r in ROWS]
+start   = min(dates)
+end     = max(dates)
+
+print(f"Fetching {len(tickers)} tickers from {start} to {end} ...")
 
 resp = requests.get(
     "https://data.alpaca.markets/v2/stocks/bars",
@@ -70,8 +44,8 @@ resp = requests.get(
     params={
         "symbols":    ",".join(tickers),
         "timeframe":  "1Day",
-        "start":      "2026-05-08",
-        "end":        "2026-06-03",
+        "start":      start,
+        "end":        end,
         "limit":      10000,
         "feed":       "iex",
         "adjustment": "raw",
@@ -85,11 +59,61 @@ for ticker, bar_list in bars.items():
         key = ticker + "|" + bar["t"][:10]
         data[key] = {"h": bar["h"], "l": bar["l"], "c": bar["c"]}
 
-print("date,ticker,high,low,close")
-for date, ticker in ROWS:
-    key = ticker + "|" + date
-    if key in data:
-        d = data[key]
-        print(f"{date},{ticker},{d['h']},{d['l']},{d['c']}")
-    else:
-        print(f"{date},{ticker},N/A,N/A,N/A")
+print(f"Fetched {len(data)} bar records.\n")
+
+# ── Write into spreadsheet ────────────────────────────────────────────
+wb  = openpyxl.load_workbook(SPREADSHEET_PATH)
+ws  = wb["Pre-Trade Data"]
+
+thin   = Side(style="thin")
+border = Border(top=thin, bottom=thin, left=thin, right=thin)
+font   = Font(name="Calibri", size=11)
+
+# Build lookup: (ticker, date_str) -> row cells
+def to_date_str(val):
+    if isinstance(val, datetime): return val.strftime("%Y-%m-%d")
+    if isinstance(val, date):     return val.strftime("%Y-%m-%d")
+    if isinstance(val, str):
+        for fmt in ("%B %d, %Y", "%Y-%m-%d"):
+            try: return datetime.strptime(val, fmt).strftime("%Y-%m-%d")
+            except: pass
+    return None
+
+updated = 0
+not_found = []
+
+for row in ws.iter_rows(min_row=3, values_only=False):
+    ticker = row[1].value
+    if not ticker:
+        continue
+
+    # Skip if all three already filled
+    if row[16].value is not None and row[17].value is not None and row[18].value is not None:
+        continue
+
+    date_str = to_date_str(row[0].value)
+    if not date_str:
+        continue
+
+    key = f"{ticker}|{date_str}"
+    if key not in data:
+        not_found.append(f"{date_str} {ticker}")
+        continue
+
+    d = data[key]
+    for cell, val in [(row[16], d["h"]), (row[17], d["l"]), (row[18], d["c"])]:
+        cell.value         = round(val, 4)
+        cell.number_format = '"$"#,##0.00'
+        cell.font          = font
+        cell.border        = border
+
+    print(f"  ✅ {date_str} {ticker:6s}  H={d['h']}  L={d['l']}  C={d['c']}")
+    updated += 1
+
+wb.save(SPREADSHEET_PATH)
+
+print(f"\n✅ Done — {updated} rows updated.")
+if not_found:
+    print(f"⚠  No data found for {len(not_found)} rows:")
+    for x in not_found:
+        print(f"   {x}")
