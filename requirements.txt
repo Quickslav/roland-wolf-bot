@@ -1,4 +1,5 @@
 flask
 alpaca-py
 pytz
+requests
 openpyxl
