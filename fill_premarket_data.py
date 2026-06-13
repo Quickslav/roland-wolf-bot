@@ -279,6 +279,72 @@ def main(filepath: str):
     print(f"\n✓ Done. {filled_count} cells filled. Saved to: {filepath}")
 
 
+# ─────────────────────────────────────────
+# HOD / LOD FILL
+# ─────────────────────────────────────────
+
+def fill_hod_lod(filepath: str):
+    print(f"\nFilling HOD/LOD: {filepath}")
+    wb = load_workbook(filepath)
+    ws = wb[SHEET_NAME]
+
+    COL_HOD = 21
+    COL_LOD = 22
+    filled = 0
+
+    for row in ws.iter_rows(min_row=DATA_START, max_row=ws.max_row):
+        date_val = row[0].value
+        ticker   = str(row[1].value).strip() if row[1].value else None
+        hod_cell = row[COL_HOD - 1]
+        lod_cell = row[COL_LOD - 1]
+
+        if not date_val or not ticker:
+            continue
+        if hod_cell.value is not None and lod_cell.value is not None:
+            continue
+
+        trade_date = parse_date(date_val)
+        if not trade_date:
+            continue
+
+        print(f"  {trade_date} | {ticker}")
+        resp = requests.get(
+            f"https://data.alpaca.markets/v2/stocks/{ticker}/bars",
+            headers=HEADERS,
+            params={
+                "timeframe":  "1Day",
+                "start":      str(trade_date),
+                "end":        str(trade_date),
+                "feed":       "iex",
+                "adjustment": "raw",
+            },
+            timeout=10,
+        )
+
+        if resp.status_code != 200:
+            print(f"    ⚠ Error {resp.status_code}")
+            continue
+
+        bars = resp.json().get("bars", [])
+        if not bars:
+            print(f"    ⚠ No data")
+            continue
+
+        bar = bars[0]
+        if hod_cell.value is None:
+            hod_cell.value = round(bar["h"], 4)
+            filled += 1
+        if lod_cell.value is None:
+            lod_cell.value = round(bar["l"], 4)
+            filled += 1
+
+        print(f"    ✓ HOD={bar['h']} LOD={bar['l']}")
+        time.sleep(0.2)
+
+    wb.save(filepath)
+    print(f"\n✓ HOD/LOD done. {filled} cells filled.")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fill blank Pre-Trade Data cells from Alpaca")
     parser.add_argument(
@@ -286,5 +352,15 @@ if __name__ == "__main__":
         default=DEFAULT_FILE,
         help=f"Path to the tracker Excel file (default: {DEFAULT_FILE})"
     )
+    parser.add_argument(
+        "--hod-only",
+        action="store_true",
+        help="Only fill HOD/LOD columns"
+    )
     args = parser.parse_args()
-    main(args.file)
+
+    if args.hod_only:
+        fill_hod_lod(args.file)
+    else:
+        main(args.file)
+        fill_hod_lod(args.file)
