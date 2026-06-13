@@ -150,7 +150,7 @@ def fetch_minute_bars(ticker: str, day: date, start_hour: int, start_min: int,
             "start":     start_str,
             "end":       end_str,
             "limit":     500,
-            "feed":      "iex",
+            "feed":      "sip",
         },
         timeout=15,
     )
