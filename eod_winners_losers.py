@@ -82,7 +82,7 @@ def get_universe() -> list[str]:
     """
     print("Fetching full tradable US equity universe...")
     r = requests.get(
-        "https://api.alpaca.markets/v2/assets",
+        "https://paper-api.alpaca.markets/v2/assets",
         headers=HEADERS,
         params={"status": "active", "asset_class": "us_equity"},
         timeout=30,
