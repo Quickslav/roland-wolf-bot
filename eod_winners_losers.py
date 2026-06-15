@@ -47,8 +47,10 @@ HEADERS = {
     "APCA-API-SECRET-KEY": SECRET,
 }
 
-UNIVERSE_SIZE   = 100          # how many most-active tickers to pull
+BATCH_SIZE      = 200          # tickers per bars request (keeps URLs sane)
 TOP_N           = 20           # winners and losers count
+MIN_PREV_CLOSE  = 0.50         # drop stocks under 50c
+MIN_VOLUME      = 50000        # light liquidity floor so moves are real/tradable
 WINNERS_CSV     = "eod_winners.csv"
 LOSERS_CSV      = "eod_losers.csv"
 
@@ -73,65 +75,86 @@ def trading_days(start: date, end: date) -> list[date]:
 
 
 def get_universe() -> list[str]:
-    """Pull most-active tickers from Alpaca's screener."""
-    print(f"Fetching most-active universe (top {UNIVERSE_SIZE})...")
+    """
+    Pull the FULL list of active, tradable US equities from Alpaca.
+    This is the free way to get a broad universe (thousands of names)
+    instead of just the 100 most-actives.
+    """
+    print("Fetching full tradable US equity universe...")
     r = requests.get(
-        "https://data.alpaca.markets/v1beta1/screener/stocks/most-actives",
+        "https://api.alpaca.markets/v2/assets",
         headers=HEADERS,
-        params={"by": "volume", "top": UNIVERSE_SIZE},
-        timeout=15,
+        params={"status": "active", "asset_class": "us_equity"},
+        timeout=30,
     )
     if r.status_code != 200:
-        print(f"  ⚠ Screener error {r.status_code}: {r.text[:200]}")
+        print(f"  ⚠ Assets error {r.status_code}: {r.text[:200]}")
         return []
-    tickers = [x["symbol"] for x in r.json().get("most_actives", [])]
-    print(f"  Got {len(tickers)} tickers.")
+
+    assets = r.json()
+    # Keep only tradable names on major exchanges, skip OTC junk
+    tickers = [
+        a["symbol"] for a in assets
+        if a.get("tradable")
+        and a.get("exchange") in ("NYSE", "NASDAQ", "AMEX", "ARCA", "BATS")
+        and "/" not in a["symbol"]      # skip preferred/units oddities
+    ]
+    print(f"  Got {len(tickers)} tradable tickers.")
     return tickers
 
 
 def fetch_all_bars(tickers: list[str], start: date, end: date) -> dict:
     """
-    Fetch daily bars for all tickers across the range in one paginated call.
-    Returns {ticker: {date_str: bar}}.
+    Fetch daily bars for all tickers across the range, batching the ticker
+    list so each request stays a reasonable size. Handles pagination within
+    each batch. Returns {ticker: {date_str: bar}}.
     """
-    print(f"Fetching daily bars {start} → {end}...")
+    print(f"Fetching daily bars {start} → {end} for {len(tickers)} tickers...")
     out: dict[str, dict[str, dict]] = {}
-    page_token = None
 
-    while True:
-        params = {
-            "symbols":    ",".join(tickers),
-            "timeframe":  "1Day",
-            "start":      str(start),
-            "end":        str(end),
-            "limit":      10000,
-            "feed":       "iex",
-            "adjustment": "raw",
-        }
-        if page_token:
-            params["page_token"] = page_token
+    batches = [tickers[i:i + BATCH_SIZE] for i in range(0, len(tickers), BATCH_SIZE)]
+    print(f"  Split into {len(batches)} batches of up to {BATCH_SIZE}.")
 
-        r = requests.get(
-            "https://data.alpaca.markets/v2/stocks/bars",
-            headers=HEADERS,
-            params=params,
-            timeout=30,
-        )
-        if r.status_code != 200:
-            print(f"  ⚠ Bars error {r.status_code}: {r.text[:200]}")
-            break
+    for bi, batch in enumerate(batches, 1):
+        page_token = None
+        while True:
+            params = {
+                "symbols":    ",".join(batch),
+                "timeframe":  "1Day",
+                "start":      str(start),
+                "end":        str(end),
+                "limit":      10000,
+                "feed":       "iex",
+                "adjustment": "raw",
+            }
+            if page_token:
+                params["page_token"] = page_token
 
-        data = r.json()
-        bars = data.get("bars", {})
-        for ticker, bar_list in bars.items():
-            out.setdefault(ticker, {})
-            for bar in bar_list:
-                out[ticker][bar["t"][:10]] = bar
+            r = requests.get(
+                "https://data.alpaca.markets/v2/stocks/bars",
+                headers=HEADERS,
+                params=params,
+                timeout=30,
+            )
+            if r.status_code != 200:
+                print(f"  ⚠ Batch {bi} error {r.status_code}: {r.text[:150]}")
+                break
 
-        page_token = data.get("next_page_token")
-        if not page_token:
-            break
-        time.sleep(0.2)
+            data = r.json()
+            bars = data.get("bars", {})
+            for ticker, bar_list in bars.items():
+                out.setdefault(ticker, {})
+                for bar in bar_list:
+                    out[ticker][bar["t"][:10]] = bar
+
+            page_token = data.get("next_page_token")
+            if not page_token:
+                break
+            time.sleep(0.15)
+
+        if bi % 5 == 0 or bi == len(batches):
+            print(f"  ...batch {bi}/{len(batches)} done ({len(out)} tickers so far)")
+        time.sleep(0.15)
 
     print(f"  Got bars for {len(out)} tickers.")
     return out
@@ -157,6 +180,13 @@ def build_rows(day: date, ticker_map: dict) -> list[dict]:
         bar  = date_map[day_str]
         prev = prev_close_for(date_map, day)
         if prev is None or prev == 0:
+            continue
+
+        # Filters to strip junk: penny stocks and illiquid names produce
+        # absurd % swings that aren't real trading opportunities
+        if prev < MIN_PREV_CLOSE:
+            continue
+        if bar.get("v", 0) < MIN_VOLUME:
             continue
 
         pct  = (bar["c"] - prev) / prev * 100
