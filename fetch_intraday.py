@@ -101,7 +101,7 @@ def fetch_day(symbols, d, key, secret, tf, premarket, feed, pause=0.3):
 
 # ---------- path metrics ----------
 
-def metrics(bars, d):
+def metrics(bars, midday=dt.time(12,0)):
     rth = [b for b in bars if dt.time(9,30) <= b['t'].time() < dt.time(16,0)]
     if len(rth) < 2: return None
     o = rth[0]['o']
@@ -133,9 +133,25 @@ def metrics(bars, d):
         if vwap == vwap and b['c'] < vwap: below += 1
         if b['t'].time() >= dt.time(9,45) and above15 != above15:  # first bar at/after 9:45
             above15 = 1 if (vwap==vwap and b['c'] > vwap) else 0
+    # ---- morning-window (open -> midday) pullback structure ----
+    am = [b for b in rth if b['t'].time() < midday]
+    am_low = min(b['l'] for b in am)
+    am_low_bar = min(am, key=lambda b: b['l'])
+    am_low_min = (am_low_bar['t'] - rth[0]['t']).total_seconds()/60
+    am_high = max(b['h'] for b in am)
+    # heat AFTER a 9:45 entry, up to midday
+    entry = [b for b in rth if b['t'].time() >= dt.time(9,45)]
+    px0945 = entry[0]['o'] if entry else o
+    am_after = [b for b in entry if b['t'].time() < midday]
+    pe_low = min(b['l'] for b in am_after) if am_after else px0945
+    postentry_low_pct = (px0945 - pe_low)/px0945*100 if px0945 else np.nan
+
     return dict(session_open=round(o,4), session_high=round(hi,4), session_low=round(lo,4),
                 session_close=round(cl,4), mfe_pct=round((hi-o)/o*100,2),
                 mae_before_high_pct=round(mae_before,2), max_pullback_from_peak_pct=round(max_pb,2),
+                am_low_price=round(am_low,4), am_low_from_open_pct=round((o-am_low)/o*100,2),
+                am_low_min=round(am_low_min,0), am_high_from_open_pct=round((am_high-o)/o*100,2),
+                postentry_low_pct=round(postentry_low_pct,2),
                 ret_close_pct=round((cl-o)/o*100,2), mins_to_high=round(mins_to_high,0),
                 **{k: (round(v,2) if v==v else None) for k,v in rets.items()},
                 frac_below_vwap=round(below/len(rth),2), above_vwap_0945=above15,
@@ -152,6 +168,7 @@ def main():
     ap.add_argument('--gap-max', type=float, default=50)
     ap.add_argument('--label', default='all', choices=['all','W','L'])
     ap.add_argument('--premarket', action='store_true')
+    ap.add_argument('--midday', default='12:00', help='cutoff for morning-low window (ET, HH:MM)')
     ap.add_argument('--feed', default='iex')
     ap.add_argument('--limit-dates', type=int, default=0)
     ap.add_argument('--limit-tickers', type=int, default=0)
@@ -177,6 +194,7 @@ def main():
 
     key, secret = os.environ.get('ALPACA_API_KEY_ID'), os.environ.get('ALPACA_API_SECRET_KEY')
     if not key or not secret: sys.exit("ERROR: set ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY")
+    hh, mm = map(int, a.midday.split(':')); midday = dt.time(hh, mm)
 
     rows, raw_frames, sparse, nodata = [], [], 0, 0
     for i, d in enumerate(dates, 1):
@@ -185,7 +203,7 @@ def main():
         syms = [t for t,_,_ in want]
         bars = fetch_day(syms, d, key, secret, a.timeframe, a.premarket, a.feed)
         for tk, lab, gap in want:
-            m = metrics(bars.get(tk, []), d)
+            m = metrics(bars.get(tk, []), midday)
             if m is None: nodata += 1; continue
             if m['data_ok'] == 'SPARSE': sparse += 1
             rows.append(dict(ticker=tk, date=d.isoformat(), label=lab, gap=round(gap,2), **m))
