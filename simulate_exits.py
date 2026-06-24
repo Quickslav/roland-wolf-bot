@@ -102,7 +102,7 @@ def main():
     ap.add_argument('--bars', required=True); ap.add_argument('--metrics', required=True)
     a = ap.parse_args()
     raw = pd.read_parquet(a.bars) if a.bars.endswith('.parquet') else pd.read_csv(a.bars)
-    raw['t'] = pd.to_datetime(raw['t'])
+    raw['t'] = pd.to_datetime(raw['t'], utc=True).dt.tz_convert('America/New_York')
     meta = pd.read_csv(a.metrics)
     meta = meta[meta['data_ok']=='OK'][['ticker','date','label','gap']].copy()
     meta['gap'] = pd.to_numeric(meta['gap'], errors='coerce')
