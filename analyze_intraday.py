@@ -24,10 +24,11 @@ def main():
     ap = argparse.ArgumentParser(); ap.add_argument('--in', dest='inp', required=True)
     d = pd.read_csv(ap.parse_args().inp)
     d = d[d['data_ok']=='OK'].copy()
-    for c in CHECK+['mfe_pct','max_pullback_from_peak_pct','mae_before_high_pct','mins_to_high','ret_close_pct','frac_below_vwap','gap']:
-        d[c] = pd.to_numeric(d[c], errors='coerce')
+    for c in CHECK+['mfe_pct','max_pullback_from_peak_pct','mae_before_high_pct','mins_to_high','ret_close_pct','frac_below_vwap','gap','am_low_from_open_pct','postentry_low_pct','am_low_min']:
+        if c in d.columns: d[c] = pd.to_numeric(d[c], errors='coerce')
     W = d[d.label=='W'].copy(); L = d[d.label=='L'].copy()
     W['gb'] = pd.cut(W.gap,[5,10,20,35,50],labels=['5-10','10-20','20-35','35-50'])
+    L['gb'] = pd.cut(L.gap,[5,10,20,35,50],labels=['5-10','10-20','20-35','35-50'])
     print(f"Clean ticker-days: {len(d)}  (winners={len(W)}, losers={len(L)})\n")
 
     print("="*74)
@@ -49,7 +50,34 @@ def main():
           f"-> runway left for a 9:45 entry.")
 
     print("\n"+"="*74)
-    print("2. TRAILING STOP — deepest pullback from a running peak (winners), by gap bin")
+    print("2. MORNING PULLBACK (open -> midday) — the dip prices, winners vs losers")
+    print("="*74)
+    if 'am_low_from_open_pct' in d.columns:
+        print("  Deepest dip below the OPEN before midday (% below open):")
+        rows=[]
+        for gb in ['5-10','10-20','20-35','35-50']:
+            gw=W[W.gb==gb]; gl=L[L.gb==gb]
+            rows.append({'gap':gb,'W_n':len(gw),'W_med':p(gw.am_low_from_open_pct,50),'W_p75':p(gw.am_low_from_open_pct,75),
+                         'L_n':len(gl),'L_med':p(gl.am_low_from_open_pct,50)})
+        print(pd.DataFrame(rows).to_string(index=False))
+        print("\n  Heat AFTER a 9:45 entry to midday (% against you from the 9:45 price):")
+        rows=[]
+        for gb in ['5-10','10-20','20-35','35-50']:
+            gw=W[W.gb==gb]
+            rows.append({'gap':gb,'n':len(gw),'med':p(gw.postentry_low_pct,50),'p75':p(gw.postentry_low_pct,75),'p90':p(gw.postentry_low_pct,90)})
+        print(pd.DataFrame(rows).to_string(index=False))
+        print("\n  INITIAL-STOP SEPARATION (open->midday): a stop D% below open —")
+        print("  W_keep = % of winners that DON'T hit it (survive)  |  L_cut = % of losers that DO (cut early)")
+        sep=[]
+        for D in [3,5,8,10,12,15,20]:
+            wk=(W.am_low_from_open_pct<=D).mean()*100
+            lc=(L.am_low_from_open_pct>D).mean()*100
+            sep.append({'stop_%':D,'W_keep':round(wk,1),'L_cut':round(lc,1),'edge(W_keep+L_cut-100)':round(wk+lc-100,1)})
+        print(pd.DataFrame(sep).to_string(index=False))
+        print(f"  (losers n={len(L)} — thin; treat L_cut as directional. Edge peaks where winners survive but losers don't.)")
+
+    print("\n"+"="*74)
+    print("3. TRAILING STOP — deepest pullback from a running peak (winners), by gap bin")
     print("="*74)
     rows=[]
     for gb,g in W.groupby('gb',observed=True):
@@ -66,7 +94,7 @@ def main():
     print(pd.DataFrame(surv).to_string(index=False))
 
     print("\n"+"="*74)
-    print("3. TRAP TELL — does 9:45 VWAP / green separate winners from losers?")
+    print("4. TRAP TELL — does 9:45 VWAP / green separate winners from losers?")
     print("="*74)
     both = d[d['above_vwap_0945'].notna()].copy()
     both['above_vwap_0945']=pd.to_numeric(both['above_vwap_0945'],errors='coerce')
