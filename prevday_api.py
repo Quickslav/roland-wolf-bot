@@ -10,9 +10,10 @@ and returns three signals:
   cpos = (prev_close - prev_low)/(prev_high - prev_low)   (1 = closed at the high)
   rng  = (prev_high - prev_low)/prev_close * 100     (prior-day range, for trap-risk)
 
-Set keys ONCE in Render's dashboard (Environment tab) so they survive deploys:
-  ALPACA_API_KEY_ID, ALPACA_API_SECRET_KEY
-Only market-DATA scope is used — it never touches the account or places orders.
+Keys: reuses your webhook server's existing env vars (API_KEY_1 / SECRET_KEY_1),
+or ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY if you prefer to set those instead.
+Already in your Render Environment, so nothing new to configure.
+Only market-DATA reads are used — it never touches the account or places orders.
 
 TWO WAYS TO RUN IT
 ------------------
@@ -39,10 +40,11 @@ def _cors(resp):
     return resp
 
 def _fetch_prevday(tickers, feed='iex'):
-    key = os.environ.get('ALPACA_API_KEY_ID')
-    sec = os.environ.get('ALPACA_API_SECRET_KEY')
+    # Reuse the webhook server's existing key env vars; fall back to ALPACA_* names.
+    key = os.environ.get('API_KEY_1') or os.environ.get('ALPACA_API_KEY_ID')
+    sec = os.environ.get('SECRET_KEY_1') or os.environ.get('ALPACA_API_SECRET_KEY')
     if not key or not sec:
-        return None, 'ALPACA keys not set in environment'
+        return None, 'no API keys in environment (API_KEY_1/SECRET_KEY_1 or ALPACA_API_KEY_ID/_SECRET_KEY)'
     hdr = {'APCA-API-KEY-ID': key, 'APCA-API-SECRET-KEY': sec}
     end = dt.date.today(); start = end - dt.timedelta(days=20)
     bars = defaultdict(dict)
@@ -89,7 +91,7 @@ def register(app):
             return _cors(jsonify({}))
         out, err = _fetch_prevday(tickers, feed)
         if err:
-            code = 500 if 'keys not set' in err else 502
+            code = 500 if 'no API keys' in err else 502
             return _cors(jsonify({'error': err})), code
         return _cors(jsonify(out))
 
