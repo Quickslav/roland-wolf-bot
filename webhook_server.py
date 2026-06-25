@@ -285,9 +285,11 @@ def webhook():
         if not price:
             return jsonify({"error": f"Could not fetch price for {symbol}"}), 500
 
-        shares = int(TRADE_AMOUNT / price)
+       amount = size_for(symbol)
+        shares = int(amount / price)
         if shares <= 0:
             return jsonify({"error": "Price too high"}), 400
+        print(f"[MAIN] {symbol} — grade size ${amount:,} → {shares} shares")
 
         # ── Run entry filter ──────────────────────────────────────────────────
         skip, filter_reason = check_entry_filter(symbol, price)
@@ -357,9 +359,11 @@ def webhook_test():
         if not price:
             return jsonify({"error": f"Could not fetch price for {symbol}"}), 500
 
-        shares = int(TRADE_AMOUNT / price)
+        amount = size_for(symbol)
+        shares = int(amount / price)
         if shares <= 0:
             return jsonify({"error": "Price too high"}), 400
+        print(f"[MAIN] {symbol} — grade size ${amount:,} → {shares} shares")
 
         # ── Run entry filter ──────────────────────────────────────────────────
         skip, filter_reason = check_entry_filter(symbol, price)
