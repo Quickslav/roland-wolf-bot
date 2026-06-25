@@ -285,7 +285,7 @@ def webhook():
         if not price:
             return jsonify({"error": f"Could not fetch price for {symbol}"}), 500
 
-       amount = size_for(symbol)
+        amount = size_for(symbol)
         shares = int(amount / price)
         if shares <= 0:
             return jsonify({"error": "Price too high"}), 400
