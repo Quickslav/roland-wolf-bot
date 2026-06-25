@@ -13,7 +13,7 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestTradeRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
-app = Flask(__name__)from prevday_api import register
+app = Flask(__name__) from prevday_api import register
    register(app)
 
 # ─────────────────────────────────────────
