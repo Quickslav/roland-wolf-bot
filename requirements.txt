@@ -3,3 +3,4 @@ alpaca-py
 pytz
 requests
 openpyxl
+gunicorn
