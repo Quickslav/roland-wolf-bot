@@ -60,6 +60,36 @@ def safe_int(val):
         return None
 
 # ─────────────────────────────────────────
+# HELPER — parse an alert body in EITHER format
+#   a) JSON         : {"action":"buy","ticker":"QCOM","reason":"stop"}
+#   b) TradingView  : ENTRY,QCOM,gap11.15,MOMENTUM,...   (v15 alert_message)
+#                     EXIT-STOP,QCOM,...  /  EXIT-EOD,QCOM,...
+# Returns (action, symbol, reason)
+# ─────────────────────────────────────────
+def parse_alert(raw):
+    raw = (raw or "").strip()
+    # try JSON first (old hand-written alerts)
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            action = (data.get('action') or '').upper()
+            symbol = data.get('ticker') or data.get('symbol')
+            reason = data.get('reason', 'UNKNOWN')
+            return action, symbol, reason
+    except Exception:
+        pass
+    # fall back to comma-separated alert_message: ACTION,TICKER,...
+    parts = [p.strip() for p in raw.split(',')]
+    if len(parts) >= 2:
+        word   = parts[0].upper()
+        symbol = parts[1]
+        if word.startswith('ENTRY') or word == 'BUY':
+            return 'ENTRY', symbol, 'UNKNOWN'
+        if word.startswith('EXIT') or word == 'SELL':
+            return 'EXIT', symbol, word          # e.g. EXIT-STOP / EXIT-EOD as the reason
+    return '', None, 'UNKNOWN'
+
+# ─────────────────────────────────────────
 # HELPER — get live price
 # ─────────────────────────────────────────
 def get_live_price(symbol):
@@ -262,20 +292,12 @@ threading.Thread(target=keep_alive, daemon=True).start()
 # ─────────────────────────────────────────
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    try:
-        raw  = request.get_data(as_text=True)
-        data = json.loads(raw)
-    except Exception:
-        return jsonify({"error": "Could not parse JSON body"}), 400
-
-    if not data:
-        return jsonify({"error": "No data received"}), 400
-
-    action = data.get('action', '').upper()
-    symbol = data.get('ticker') or data.get('symbol')
+    raw = request.get_data(as_text=True)
+    print(f"[IN] raw={raw[:200]}", flush=True)
+    action, symbol, reason = parse_alert(raw)
 
     if not symbol or not action:
-        return jsonify({"error": "Missing ticker or action"}), 400
+        return jsonify({"error": "Missing ticker or action", "raw": raw[:200]}), 400
 
     print(f"[MAIN] action={action}, symbol={symbol}")
     results = {}
@@ -314,7 +336,6 @@ def webhook():
         return jsonify({"message": "Entry processed", "results": results}), 200
 
     elif action in ("EXIT", "SELL"):
-        reason = data.get('reason', 'UNKNOWN')
         for acc_key, acc in ACCOUNTS.items():
             try:
                 position = acc["client"].get_open_position(symbol)
@@ -335,20 +356,12 @@ def webhook():
 # ─────────────────────────────────────────
 @app.route('/webhook-test', methods=['POST'])
 def webhook_test():
-    try:
-        raw  = request.get_data(as_text=True)
-        data = json.loads(raw)
-    except Exception:
-        return jsonify({"error": "Could not parse JSON body"}), 400
-
-    if not data:
-        return jsonify({"error": "No data received"}), 400
-
-    action = data.get('action', '').upper()
-    symbol = data.get('ticker') or data.get('symbol')
+    raw = request.get_data(as_text=True)
+    print(f"[IN] raw={raw[:200]}", flush=True)
+    action, symbol, reason = parse_alert(raw)
 
     if not symbol or not action:
-        return jsonify({"error": "Missing ticker or action"}), 400
+        return jsonify({"error": "Missing ticker or action", "raw": raw[:200]}), 400
 
     print(f"[TEST] action={action}, symbol={symbol}")
     client = ACCOUNT_TEST["client"]
@@ -385,7 +398,6 @@ def webhook_test():
             return jsonify({"error": str(e)}), 500
 
     elif action in ("EXIT", "SELL"):
-        reason = data.get('reason', 'UNKNOWN')
         try:
             position = client.get_open_position(symbol)
             qty_held = abs(safe_int(position.qty))
