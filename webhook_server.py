@@ -89,6 +89,47 @@ def parse_alert(raw):
     return '', None, 'UNKNOWN'
 
 # ─────────────────────────────────────────
+# ALLOWLIST GATE — the scorer's grades get enforcement power (v17).
+# Context: 7 Jul 2026, six SKIP-graded names were traded anyway (BJDX etc.),
+# repeating the measured grade→click leak. This gate is NOT a filter — it has
+# zero rules of its own. It is a transport for the scorer's finalized output.
+#
+# Morning step (PowerShell), after grades are FINAL — post A/B/C tickers only:
+#   Invoke-RestMethod -Method Post -Uri "https://<app>.onrender.com/allowlist" -Body "TICK1,TICK2,TICK3"
+#
+# FAIL-CLOSED: no list posted for today's ET date => every ENTRY is refused.
+# No list = no trades. Cash is a position.
+# EXITS ARE NEVER GATED. The safety net is never gated.
+# In-memory: a server restart clears it (fail-closed again). Check GET / or
+# GET /allowlist before 9:30 ET to confirm the list is live.
+# ─────────────────────────────────────────
+ALLOWLIST = {"date": None, "tickers": set()}
+
+def et_today():
+    return datetime.now(pytz.timezone("America/New_York")).date()
+
+def allowlist_check(symbol):
+    """Returns (allowed: bool, reason: str). Entries only — never call for exits."""
+    if ALLOWLIST["date"] != et_today():
+        return False, f"GATE — no allowlist set for {et_today()} (fail-closed, no trades)"
+    if symbol.upper() not in ALLOWLIST["tickers"]:
+        return False, f"GATE — {symbol} not on today's allowlist (scorer grade was SKIP or name was never graded)"
+    return True, "on allowlist"
+
+@app.route('/allowlist', methods=['POST', 'GET'])
+def allowlist():
+    if request.method == 'GET':
+        return jsonify({"date": str(ALLOWLIST["date"]), "tickers": sorted(ALLOWLIST["tickers"])}), 200
+    raw = request.get_data(as_text=True) or ""
+    tickers = {t.strip().upper() for t in raw.replace('\n', ',').replace(' ', ',').split(',') if t.strip()}
+    if not tickers:
+        return jsonify({"error": "no tickers in body — send e.g. ABCD,EFGH"}), 400
+    ALLOWLIST["date"]    = et_today()
+    ALLOWLIST["tickers"] = tickers
+    print(f"[GATE] allowlist set for {ALLOWLIST['date']}: {sorted(tickers)}", flush=True)
+    return jsonify({"message": "allowlist set", "date": str(ALLOWLIST["date"]), "tickers": sorted(tickers)}), 200
+
+# ─────────────────────────────────────────
 # HELPER — get live price
 # ─────────────────────────────────────────
 def get_live_price(symbol):
@@ -208,6 +249,11 @@ def webhook():
     results = {}
 
     if action in ("ENTRY", "BUY"):
+        allowed, gate_reason = allowlist_check(symbol)
+        if not allowed:
+            print(f"[MAIN] {symbol} — ENTRY BLOCKED: {gate_reason}", flush=True)
+            return jsonify({"message": "Entry blocked by allowlist gate", "symbol": symbol, "reason": gate_reason}), 200
+
         price = get_live_price(symbol)
         if not price:
             return jsonify({"error": f"Could not fetch price for {symbol}"}), 500
@@ -262,6 +308,11 @@ def webhook_test():
     name   = ACCOUNT_TEST["name"]
 
     if action in ("ENTRY", "BUY"):
+        allowed, gate_reason = allowlist_check(symbol)
+        if not allowed:
+            print(f"[TEST] {symbol} — ENTRY BLOCKED: {gate_reason}", flush=True)
+            return jsonify({"message": "Entry blocked by allowlist gate", "symbol": symbol, "reason": gate_reason}), 200
+
         price = get_live_price(symbol)
         if not price:
             return jsonify({"error": f"Could not fetch price for {symbol}"}), 500
@@ -298,7 +349,7 @@ def webhook_test():
 # ─────────────────────────────────────────
 @app.route('/', methods=['GET'])
 def health():
-    return jsonify({"status": "Triple account webhook server running — v16 on all endpoints, safety net 15:57 ET"}), 200
+    return jsonify({"status": "Triple account webhook server running — v16 on all endpoints, safety net 15:57 ET, allowlist gate ACTIVE (v17)"}), 200
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
