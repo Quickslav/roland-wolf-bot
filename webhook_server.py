@@ -11,17 +11,11 @@ from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestTradeRequest
-from prevday_api import size_for
 
 app = Flask(__name__)
-from prevday_api import register
-register(app)
 
 # ─────────────────────────────────────────
-# ALPACA ACCOUNTS — all three run v16 (open entry, hold to 15:55 flat)
-# The old per-account exit times (11:30 / 2PM, v9 experiment) are GONE:
-# that liquidation thread is what sold PEW at 13:58 ET on 6 Jul.
-# KEYS: rotate at Alpaca -> set in Render env -> delete these fallbacks.
+# ALPACA ACCOUNTS — all three run v17 simple (9:40 entry, 3% stop, 15:55 flat)
 # ─────────────────────────────────────────
 API_KEY_1    = os.environ.get("API_KEY_1", "PKGABMMAXUYFY5NJCZIOT6XGLD")
 SECRET_KEY_1 = os.environ.get("SECRET_KEY_1", "9K8RUh1QA5jQ64jCzf6TL1SPFofh5LQMF1TQubWdyBAs")
@@ -38,14 +32,14 @@ ACCOUNT_3 = TradingClient(API_KEY_3, SECRET_KEY_3, paper=True)
 
 DATA_CLIENT = StockHistoricalDataClient(API_KEY_1, SECRET_KEY_1)
 
-# Main accounts — v16 via /webhook
+# Main accounts — v17 simple via /webhook
 ACCOUNTS = {
-    "account1": {"client": ACCOUNT_1, "name": "Account 1 (v16 hold-to-15:55)"},
-    "account2": {"client": ACCOUNT_2, "name": "Account 2 (v16 hold-to-15:55)"},
+    "account1": {"client": ACCOUNT_1, "name": "Account 1 (v17 simple)"},
+    "account2": {"client": ACCOUNT_2, "name": "Account 2 (v17 simple)"},
 }
 
-# Test account — v16 via /webhook-test
-ACCOUNT_TEST = {"client": ACCOUNT_3, "name": "Account 3 (v16 test, hold-to-15:55)"}
+# Test account — v17 simple via /webhook-test
+ACCOUNT_TEST = {"client": ACCOUNT_3, "name": "Account 3 (v17 simple test)"}
 
 # ─────────────────────────────────────────
 # HELPER — safe int conversion
@@ -57,77 +51,31 @@ def safe_int(val):
         return None
 
 # ─────────────────────────────────────────
-# HELPER — parse an alert body in EITHER format
-#   a) JSON         : {"action":"buy","ticker":"QCOM","reason":"stop"}
-#   b) TradingView  : ENTRY,QCOM,gap11.15,OPEN-HOLD,...   (v16 alert_message)
-#                     EXIT-STOP,QCOM,...  /  EXIT-EOD,QCOM,...
-# Only the first two comma fields matter (action word, ticker), so the
-# v16 OPEN-HOLD token passes through with no parser change.
-# Returns (action, symbol, reason)
+# HELPER — parse alert and extract shares if present
+# Format: ENTRY,TICKER,SIMPLE-940,shares=123,fill=1.50,t=...
+# Returns (action, symbol, reason, shares_from_alert)
 # ─────────────────────────────────────────
 def parse_alert(raw):
     raw = (raw or "").strip()
-    # try JSON first (old hand-written alerts)
-    try:
-        data = json.loads(raw)
-        if isinstance(data, dict):
-            action = (data.get('action') or '').upper()
-            symbol = data.get('ticker') or data.get('symbol')
-            reason = data.get('reason', 'UNKNOWN')
-            return action, symbol, reason
-    except Exception:
-        pass
-    # fall back to comma-separated alert_message: ACTION,TICKER,...
     parts = [p.strip() for p in raw.split(',')]
     if len(parts) >= 2:
         word   = parts[0].upper()
         symbol = parts[1]
+        
+        # Extract shares if present
+        shares_from_alert = None
+        for part in parts:
+            if part.startswith('shares='):
+                try:
+                    shares_from_alert = int(part.replace('shares=', '').strip())
+                except:
+                    pass
+        
         if word.startswith('ENTRY') or word == 'BUY':
-            return 'ENTRY', symbol, 'UNKNOWN'
+            return 'ENTRY', symbol, 'UNKNOWN', shares_from_alert
         if word.startswith('EXIT') or word == 'SELL':
-            return 'EXIT', symbol, word          # e.g. EXIT-STOP / EXIT-EOD as the reason
-    return '', None, 'UNKNOWN'
-
-# ─────────────────────────────────────────
-# ALLOWLIST GATE — the scorer's grades get enforcement power (v17).
-# Context: 7 Jul 2026, six SKIP-graded names were traded anyway (BJDX etc.),
-# repeating the measured grade→click leak. This gate is NOT a filter — it has
-# zero rules of its own. It is a transport for the scorer's finalized output.
-#
-# Morning step (PowerShell), after grades are FINAL — post A/B/C tickers only:
-#   Invoke-RestMethod -Method Post -Uri "https://<app>.onrender.com/allowlist" -Body "TICK1,TICK2,TICK3"
-#
-# FAIL-CLOSED: no list posted for today's ET date => every ENTRY is refused.
-# No list = no trades. Cash is a position.
-# EXITS ARE NEVER GATED. The safety net is never gated.
-# In-memory: a server restart clears it (fail-closed again). Check GET / or
-# GET /allowlist before 9:30 ET to confirm the list is live.
-# ─────────────────────────────────────────
-ALLOWLIST = {"date": None, "tickers": set()}
-
-def et_today():
-    return datetime.now(pytz.timezone("America/New_York")).date()
-
-def allowlist_check(symbol):
-    """Returns (allowed: bool, reason: str). Entries only — never call for exits."""
-    if ALLOWLIST["date"] != et_today():
-        return False, f"GATE — no allowlist set for {et_today()} (fail-closed, no trades)"
-    if symbol.upper() not in ALLOWLIST["tickers"]:
-        return False, f"GATE — {symbol} not on today's allowlist (scorer grade was SKIP or name was never graded)"
-    return True, "on allowlist"
-
-@app.route('/allowlist', methods=['POST', 'GET'])
-def allowlist():
-    if request.method == 'GET':
-        return jsonify({"date": str(ALLOWLIST["date"]), "tickers": sorted(ALLOWLIST["tickers"])}), 200
-    raw = request.get_data(as_text=True) or ""
-    tickers = {t.strip().upper() for t in raw.replace('\n', ',').replace(' ', ',').split(',') if t.strip()}
-    if not tickers:
-        return jsonify({"error": "no tickers in body — send e.g. ABCD,EFGH"}), 400
-    ALLOWLIST["date"]    = et_today()
-    ALLOWLIST["tickers"] = tickers
-    print(f"[GATE] allowlist set for {ALLOWLIST['date']}: {sorted(tickers)}", flush=True)
-    return jsonify({"message": "allowlist set", "date": str(ALLOWLIST["date"]), "tickers": sorted(tickers)}), 200
+            return 'EXIT', symbol, word, None
+    return '', None, 'UNKNOWN', None
 
 # ─────────────────────────────────────────
 # HELPER — get live price
@@ -139,7 +87,7 @@ def get_live_price(symbol):
         price          = float(response[symbol].price)
         return price
     except Exception as e:
-        print(f"Error fetching price for {symbol}: {e}")
+        print(f"[PRICE] Error fetching {symbol}: {e}")
         return None
 
 # ─────────────────────────────────────────
@@ -155,19 +103,7 @@ def place_order(client, symbol, qty, side):
     return client.submit_order(order)
 
 # ─────────────────────────────────────────
-# NOTE: check_entry_filter() is deliberately REMOVED (was here in the v9-era
-# server). Its three rules were never backtested, were designed around 9:45
-# signals, and the PM-volume>15,000 skip contradicts the measured winner
-# profile (winners' PM volume runs ~3.3x losers). Any entry-filter idea goes
-# through backtest_bars_v2.py before it gets to veto live orders.
-# ─────────────────────────────────────────
-
-# ─────────────────────────────────────────
-# SAFETY NET LIQUIDATION — ALL accounts, 15:57 ET, once per day.
-# Fires two minutes AFTER the TradingView EXIT-EOD alert (15:55), so it only
-# catches stragglers: expired/unarmed alerts, missed exits, manual positions.
-# It is the failsafe, not the exit — the TV alert stays primary so fills keep
-# their EXIT-EOD tags.
+# SAFETY NET LIQUIDATION — 15:57 ET, once per day
 # ─────────────────────────────────────────
 def safety_liquidation():
     et_tz = pytz.timezone("America/New_York")
@@ -189,7 +125,7 @@ def safety_liquidation():
                 liquidated_today = {"account1": False, "account2": False, "account3": False}
                 last_date = today
 
-            # weekdays only, window 15:57-16:05 ET
+            # weekdays only, 15:57-16:05 ET
             in_window = (now_et.weekday() < 5 and
                          ((now_et.hour == 15 and now_et.minute >= 57) or
                           (now_et.hour == 16 and now_et.minute <= 5)))
@@ -201,7 +137,7 @@ def safety_liquidation():
                     try:
                         positions = client.get_all_positions()
                         if positions:
-                            print(f"[SAFETY NET] {name} — flattening {len(positions)} position(s) + cancelling orders")
+                            print(f"[SAFETY NET] {name} — flattening {len(positions)} position(s)")
                             client.close_all_positions(cancel_orders=True)
                         else:
                             print(f"[SAFETY NET] {name} — already flat")
@@ -226,21 +162,21 @@ def keep_alive():
     while True:
         try:
             urllib.request.urlopen(f"{RENDER_URL}/")
-            print("Keep-alive ping sent")
+            print("[KEEP-ALIVE] ping sent")
         except Exception as e:
-            print(f"Keep-alive failed: {e}")
+            print(f"[KEEP-ALIVE] failed: {e}")
         time.sleep(600)
 
 threading.Thread(target=keep_alive, daemon=True).start()
 
 # ─────────────────────────────────────────
-# MAIN WEBHOOK — Accounts 1 and 2 (v16)
+# MAIN WEBHOOK — Accounts 1 and 2 (v17 simple)
 # ─────────────────────────────────────────
 @app.route('/webhook', methods=['POST'])
 def webhook():
     raw = request.get_data(as_text=True)
     print(f"[IN] raw={raw[:200]}", flush=True)
-    action, symbol, reason = parse_alert(raw)
+    action, symbol, reason, shares_from_alert = parse_alert(raw)
 
     if not symbol or not action:
         return jsonify({"error": "Missing ticker or action", "raw": raw[:200]}), 400
@@ -249,26 +185,26 @@ def webhook():
     results = {}
 
     if action in ("ENTRY", "BUY"):
-        allowed, gate_reason = allowlist_check(symbol)
-        if not allowed:
-            print(f"[MAIN] {symbol} — ENTRY BLOCKED: {gate_reason}", flush=True)
-            return jsonify({"message": "Entry blocked by allowlist gate", "symbol": symbol, "reason": gate_reason}), 200
-
         price = get_live_price(symbol)
         if not price:
             return jsonify({"error": f"Could not fetch price for {symbol}"}), 500
 
-        amount = size_for(symbol)
-        shares = int(amount / price)
+        # Use shares from alert if present, else calculate
+        if shares_from_alert is not None:
+            shares = shares_from_alert
+            print(f"[MAIN] {symbol} — using Pine-calculated {shares} shares @ ${price:.4f}")
+        else:
+            shares = int(5000 / price)
+            print(f"[MAIN] {symbol} — calculated {shares} shares @ ${price:.4f}")
+        
         if shares <= 0:
-            return jsonify({"error": "Price too high"}), 400
-        print(f"[MAIN] {symbol} — grade size ${amount:,} → {shares} shares")
+            return jsonify({"error": "Price too high for $5k position"}), 400
 
         for acc_key, acc in ACCOUNTS.items():
             try:
                 place_order(acc["client"], symbol, shares, OrderSide.BUY)
-                print(f"[{acc['name']}] BUY {shares} shares of {symbol} @ ~${price:.4f}")
-                results[acc_key] = f"BUY {shares} shares @ ~${price:.4f}"
+                print(f"[{acc['name']}] BUY {shares} shares of {symbol} @ ${price:.4f}")
+                results[acc_key] = f"BUY {shares} shares @ ${price:.4f}"
             except Exception as e:
                 print(f"[{acc['name']}] Error: {e}")
                 results[acc_key] = f"Error: {str(e)}"
@@ -284,7 +220,7 @@ def webhook():
                 print(f"[{acc['name']}] SELL {qty_held} shares of {symbol} — {reason}")
                 results[acc_key] = f"SELL {qty_held} shares"
             except Exception as e:
-                print(f"[{acc['name']}] No position: {e}")
+                print(f"[{acc['name']}] No position or error: {e}")
                 results[acc_key] = "No open position"
 
         return jsonify({"message": "Exit processed", "results": results}), 200
@@ -292,13 +228,13 @@ def webhook():
     return jsonify({"error": f"Unknown action: {action}"}), 400
 
 # ─────────────────────────────────────────
-# TEST WEBHOOK — Account 3 only (v16)
+# TEST WEBHOOK — Account 3 only (v17 simple)
 # ─────────────────────────────────────────
 @app.route('/webhook-test', methods=['POST'])
 def webhook_test():
     raw = request.get_data(as_text=True)
     print(f"[IN] raw={raw[:200]}", flush=True)
-    action, symbol, reason = parse_alert(raw)
+    action, symbol, reason, shares_from_alert = parse_alert(raw)
 
     if not symbol or not action:
         return jsonify({"error": "Missing ticker or action", "raw": raw[:200]}), 400
@@ -308,25 +244,25 @@ def webhook_test():
     name   = ACCOUNT_TEST["name"]
 
     if action in ("ENTRY", "BUY"):
-        allowed, gate_reason = allowlist_check(symbol)
-        if not allowed:
-            print(f"[TEST] {symbol} — ENTRY BLOCKED: {gate_reason}", flush=True)
-            return jsonify({"message": "Entry blocked by allowlist gate", "symbol": symbol, "reason": gate_reason}), 200
-
         price = get_live_price(symbol)
         if not price:
             return jsonify({"error": f"Could not fetch price for {symbol}"}), 500
 
-        amount = size_for(symbol)
-        shares = int(amount / price)
+        # Use shares from alert if present, else calculate
+        if shares_from_alert is not None:
+            shares = shares_from_alert
+            print(f"[TEST] {symbol} — using Pine-calculated {shares} shares @ ${price:.4f}")
+        else:
+            shares = int(5000 / price)
+            print(f"[TEST] {symbol} — calculated {shares} shares @ ${price:.4f}")
+        
         if shares <= 0:
-            return jsonify({"error": "Price too high"}), 400
-        print(f"[TEST] {symbol} — grade size ${amount:,} → {shares} shares")
+            return jsonify({"error": "Price too high for $5k position"}), 400
 
         try:
             place_order(client, symbol, shares, OrderSide.BUY)
-            print(f"[{name}] BUY {shares} shares of {symbol} @ ~${price:.4f}")
-            return jsonify({"message": f"TEST BUY {shares} shares of {symbol}"}), 200
+            print(f"[{name}] BUY {shares} shares of {symbol} @ ${price:.4f}")
+            return jsonify({"message": f"BUY {shares} shares of {symbol}", "price": price, "shares": shares}), 200
         except Exception as e:
             print(f"[{name}] Error: {e}")
             return jsonify({"error": str(e)}), 500
@@ -337,9 +273,9 @@ def webhook_test():
             qty_held = abs(safe_int(position.qty))
             place_order(client, symbol, qty_held, OrderSide.SELL)
             print(f"[{name}] SELL {qty_held} shares of {symbol} — {reason}")
-            return jsonify({"message": f"TEST SELL {qty_held} shares of {symbol}", "reason": reason}), 200
+            return jsonify({"message": f"SELL {qty_held} shares of {symbol}", "reason": reason}), 200
         except Exception as e:
-            print(f"[{name}] No position: {e}")
+            print(f"[{name}] No position or error: {e}")
             return jsonify({"message": f"No open position for {symbol}"}), 200
 
     return jsonify({"error": f"Unknown action: {action}"}), 400
@@ -349,7 +285,7 @@ def webhook_test():
 # ─────────────────────────────────────────
 @app.route('/', methods=['GET'])
 def health():
-    return jsonify({"status": "Triple account webhook server running — v16 on all endpoints, safety net 15:57 ET, allowlist gate ACTIVE (v17)"}), 200
+    return jsonify({"status": "v18 — no gate, no grades, $5k fixed sizing, safety net 15:57 ET"}), 200
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
